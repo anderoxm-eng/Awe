@@ -4,16 +4,17 @@ FREELLMAPI_PORT=${PORT:-3001}
 SSH_PORT=2222
 
 if [ "$FREELLMAPI_PORT" = "$SSH_PORT" ]; then
-  FREELLMAPI_PORT=3001
+    FREELLMAPI_PORT=3001
 fi
 
 SSH_USERNAME=${SSH_USERNAME:-root}
 SSH_PASSWORD=${SSH_PASSWORD:-changeme123}
 
 if [ -z "$ENCRYPTION_KEY" ]; then
-  export ENCRYPTION_KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
-  echo "⚠️  ENCRYPTION_KEY not set — generated a random one for this session."
-  echo "    Set it as a Railway Variable to keep your keys across redeploys."
+    export ENCRYPTION_KEY=$(node -e \
+        "console.log(require('crypto').randomBytes(32).toString('hex'))")
+
+    echo "⚠️ ENCRYPTION_KEY not set — generated for this session."
 fi
 
 echo "========================================"
@@ -21,13 +22,14 @@ echo "  Railway FreeLLMAPI + SSH Setup"
 echo "========================================"
 echo "FreeLLMAPI Port: $FREELLMAPI_PORT"
 echo "SSH Port: $SSH_PORT"
-echo "SSH Username: $SSH_USERNAME"
 echo ""
 
-# ---------- SSH config (same approach as original start.sh) ----------
+# ---------- SSH configuration ----------
+
 SSHD_CONFIG="/etc/ssh/sshd_config"
-mkdir -p "$(dirname "$SSHD_CONFIG")"
+
 mkdir -p /run/sshd
+mkdir -p /etc/ssh
 
 cat > "$SSHD_CONFIG" << SSHEOF
 Port $SSH_PORT
@@ -40,92 +42,79 @@ PrintMotd no
 Subsystem sftp /usr/lib/openssh/sftp-server
 SSHEOF
 
-# Host keys were generated in Dockerfile build step — just verify
+# Verify SSH host keys
 if [ ! -f /etc/ssh/ssh_host_rsa_key ]; then
-  echo "  Generating SSH host keys..."
-  ssh-keygen -A
+    echo "Generating SSH host keys..."
+    ssh-keygen -A
 fi
 
-# Set root password — /etc/shadow was made writable in Dockerfile
+# Set SSH password
 echo "root:$SSH_PASSWORD" | chpasswd
-echo "✓ Password set"
 
-echo ""
-echo "========================================"
-echo "  🔑 ACCESS CREDENTIALS"
-echo "========================================"
-echo "Dashboard: http://<railway-domain>"
-echo "SSH Username: $SSH_USERNAME"
-echo "SSH Password: $SSH_PASSWORD"
-echo "========================================"
-echo ""
+echo "✓ SSH password configured"
 
-chmod 444 "$SSHD_CONFIG" 2>/dev/null || true
+# Validate SSH configuration
+if ! /usr/sbin/sshd -t -f "$SSHD_CONFIG"; then
+    echo "❌ SSH configuration is invalid"
+    exit 1
+fi
 
-# ---------- Supervisor: SSH ----------
+echo "✓ SSH configuration validated"
+
+# ---------- SSH supervisor ----------
+
 supervise_sshd() {
-  while true; do
-    if ! pgrep -f "/usr/sbin/sshd -D -f $SSHD_CONFIG" >/dev/null 2>&1; then
-      echo "$(date '+%Y-%m-%d %H:%M:%S') [watchdog] Starting sshd..."
-      /usr/sbin/sshd -D -f "$SSHD_CONFIG" &
-      sleep 2
-      pgrep -f "/usr/sbin/sshd -D -f $SSHD_CONFIG" >/dev/null 2>&1 \
-        && echo "$(date '+%Y-%m-%d %H:%M:%S') [watchdog] ✓ sshd is up" \
-        || echo "$(date '+%Y-%m-%d %H:%M:%S') [watchdog] ❌ sshd failed"
-    fi
-    sleep 5
-  done
+    while true; do
+        if ! pgrep -f "sshd -D -f $SSHD_CONFIG" >/dev/null 2>&1; then
+            echo "$(date '+%Y-%m-%d %H:%M:%S') [SSH] Starting sshd..."
+
+            /usr/sbin/sshd -D -f "$SSHD_CONFIG" &
+
+            sleep 2
+
+            if pgrep -f "sshd -D -f $SSHD_CONFIG" >/dev/null 2>&1; then
+                echo "$(date '+%Y-%m-%d %H:%M:%S') [SSH] ✓ SSH is running"
+            else
+                echo "$(date '+%Y-%m-%d %H:%M:%S') [SSH] ❌ SSH failed"
+            fi
+        fi
+
+        sleep 5
+    done
 }
 
-# ---------- Supervisor: FreeLLMAPI ----------
-# --max-old-space-size=256 prevents OOM kill on Railway's free tier (512MB RAM)
-supervise_freellmapi() {
-  while true; do
-    NEEDS_RESTART=0
-    if ! pgrep -f "node.*server/dist/index" >/dev/null 2>&1; then
-      echo "$(date '+%Y-%m-%d %H:%M:%S') [watchdog] FreeLLMAPI process not found"
-      NEEDS_RESTART=1
-    else
-      HTTP_CODE=$(curl -s -o /dev/null -m 5 -w "%{http_code}" "http://127.0.0.1:$FREELLMAPI_PORT" 2>/dev/null || echo "000")
-      if ! echo "$HTTP_CODE" | grep -qE "^[23]|^401"; then
-        echo "$(date '+%Y-%m-%d %H:%M:%S') [watchdog] FreeLLMAPI not responding (code=$HTTP_CODE) — restarting"
-        pkill -9 -f "node.*server/dist/index" 2>/dev/null
-        sleep 1
-        NEEDS_RESTART=1
-      fi
-    fi
+# ---------- Start SSH ----------
 
-    if [ "$NEEDS_RESTART" = "1" ]; then
-      echo "$(date '+%Y-%m-%d %H:%M:%S') [watchdog] Starting FreeLLMAPI on port $FREELLMAPI_PORT..."
-      PORT=$FREELLMAPI_PORT node --max-old-space-size=256 /app/server/dist/index.js &
-      sleep 5
-      pgrep -f "node.*server/dist/index" >/dev/null 2>&1 \
-        && echo "$(date '+%Y-%m-%d %H:%M:%S') [watchdog] ✓ FreeLLMAPI is up" \
-        || echo "$(date '+%Y-%m-%d %H:%M:%S') [watchdog] ❌ FreeLLMAPI failed to start"
-    fi
-    sleep 5
-  done
-}
+echo "🚀 Starting SSH supervisor..."
 
-echo "🚀 Starting supervised services..."
 supervise_sshd &
-SUPERVISOR_SSH_PID=$!
-supervise_freellmapi &
-SUPERVISOR_FREELLMAPI_PID=$!
+SSH_SUPERVISOR_PID=$!
 
-echo "✓ SSH watchdog PID: $SUPERVISOR_SSH_PID"
-echo "✓ FreeLLMAPI watchdog PID: $SUPERVISOR_FREELLMAPI_PID"
+echo "✓ SSH supervisor PID: $SSH_SUPERVISOR_PID"
+
+# ---------- Start FreeLLMAPI ----------
+
 echo ""
-echo "🌐 Dashboard: Railway domain → http://<domain>"
-echo "🔑 SSH: Railway TCP Proxy (Settings → Networking) → port $SSH_PORT"
+echo "========================================"
+echo "  Starting FreeLLMAPI"
+echo "========================================"
+echo "Port: $FREELLMAPI_PORT"
+echo "Watchdog: DISABLED for diagnostic testing"
 echo ""
 
-while true; do
-  if ! kill -0 $SUPERVISOR_SSH_PID 2>/dev/null; then
-    supervise_sshd & SUPERVISOR_SSH_PID=$!
-  fi
-  if ! kill -0 $SUPERVISOR_FREELLMAPI_PID 2>/dev/null; then
-    supervise_freellmapi & SUPERVISOR_FREELLMAPI_PID=$!
-  fi
-  sleep 10
-done
+# Check application files
+if [ ! -f /app/server/dist/index.js ]; then
+    echo "❌ FreeLLMAPI entry file not found:"
+    echo "/app/server/dist/index.js"
+    exit 1
+fi
+
+echo "✓ FreeLLMAPI entry file found"
+echo "🚀 Launching FreeLLMAPI..."
+echo ""
+
+# Run FreeLLMAPI as the main process.
+# No pkill, no HTTP health check, no automatic restart.
+exec env PORT="$FREELLMAPI_PORT" \
+    node --max-old-space-size=256 \
+    /app/server/dist/index.js
