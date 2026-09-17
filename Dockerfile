@@ -16,9 +16,11 @@ RUN curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/insta
   && . "$NVM_DIR/nvm.sh" \
   && nvm install --lts \
   && nvm use --lts \
-  && npm install -g npm@latest
+  && npm install -g npm@latest \
+  # Force official registry globally so nothing can override it
+  && npm config set registry https://registry.npmjs.org/
 
-# Make node/npm available system-wide without sourcing nvm each time
+# Make node/npm available system-wide
 RUN . "$NVM_DIR/nvm.sh" \
   && NODE_PATH=$(nvm which current) \
   && ln -sf "$NODE_PATH" /usr/local/bin/node \
@@ -28,22 +30,21 @@ RUN . "$NVM_DIR/nvm.sh" \
 RUN mkdir -p /app
 WORKDIR /app
 
-# Clone freellmapi, force clean install from official registry, then build
+# Clone and build freellmapi
+# package-lock.json has 40+ hardcoded npmmirror.com URLs that Railway blocks.
+# Solution: delete all lockfiles + clear npm cache, then reinstall from scratch.
 RUN . "$NVM_DIR/nvm.sh" \
   && git clone https://github.com/tashfeenahmed/freellmapi.git /app/freellmapi \
   && cd /app/freellmapi \
-  # package-lock.json may contain npmmirror.com URLs which Railway blocks;
-  # delete it so npm regenerates a clean lockfile from the official registry.
-  && rm -f package-lock.json \
-  && npm config set registry https://registry.npmjs.org/ \
-  && npm install \
+  && rm -f package-lock.json desktop/package-lock.json \
+  && npm cache clean --force \
+  && npm install --no-package-lock \
   && npm run build -w server \
   && npm run build -w client
 
 COPY start.sh /app/start.sh
 RUN chmod +x /app/start.sh
 
-# freellmapi dashboard + SSH
 EXPOSE 8080 2222
 
 CMD ["/app/start.sh"]
