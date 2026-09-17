@@ -32,7 +32,7 @@ WORKDIR /app
 RUN . "$NVM_DIR/nvm.sh" \
   && git clone https://github.com/tashfeenahmed/freellmapi.git /app/freellmapi \
   && cd /app/freellmapi \
-  && npm install \
+  && npm install --registry=https://registry.npmjs.org \
   && npm run build -w server \
   && npm run build -w client
 
