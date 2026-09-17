@@ -1,12 +1,8 @@
 FROM ghcr.io/tashfeenahmed/freellmapi:latest
 
-# فقط برای SSH و supervisor
-USER root
-RUN apt-get update && apt-get install -y openssh-server curl && rm -rf /var/lib/apt/lists/*
-RUN mkdir -p /run/sshd
+# PORT is set by Railway automatically.
+# ENCRYPTION_KEY must be set as a Railway Variable (hex 64 chars).
+# If not set, a random one is generated each deploy — keys won't persist.
+ENV PORT=3001
 
-COPY start.sh /app/start.sh
-RUN chmod +x /app/start.sh
-
-EXPOSE 3001 2222
-CMD ["/app/start.sh"]
+EXPOSE 3001
