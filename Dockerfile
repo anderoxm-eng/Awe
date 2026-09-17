@@ -11,7 +11,7 @@ RUN apt update && apt install -y \
     build-essential ca-certificates \
   && apt clean && rm -rf /var/lib/apt/lists/*
 
-# Install nvm → Node LTS → latest npm (same method that works locally)
+# Install nvm → Node LTS → latest npm
 RUN curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh | bash \
   && . "$NVM_DIR/nvm.sh" \
   && nvm install --lts \
@@ -28,12 +28,15 @@ RUN . "$NVM_DIR/nvm.sh" \
 RUN mkdir -p /app
 WORKDIR /app
 
-# Clone freellmapi, install dependencies, and build at image build time
+# Clone freellmapi, force clean install from official registry, then build
 RUN . "$NVM_DIR/nvm.sh" \
   && git clone https://github.com/tashfeenahmed/freellmapi.git /app/freellmapi \
   && cd /app/freellmapi \
+  # package-lock.json may contain npmmirror.com URLs which Railway blocks;
+  # delete it so npm regenerates a clean lockfile from the official registry.
+  && rm -f package-lock.json \
   && npm config set registry https://registry.npmjs.org/ \
-  && npm install --prefer-online \
+  && npm install \
   && npm run build -w server \
   && npm run build -w client
 
